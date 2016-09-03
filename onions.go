@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"encoding/base32"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -22,6 +23,10 @@ import (
 	"strings"
 )
 
+/*
+Create onion address by base-32 encoding a SHA1 hash of the first half of the
+private key.
+*/
 func KeyToOnion(key *rsa.PrivateKey) string {
 	pub := key.Public()
 	der, _ := x509.MarshalPKIXPublicKey(pub)
@@ -30,50 +35,105 @@ func KeyToOnion(key *rsa.PrivateKey) string {
 	return base32.StdEncoding.EncodeToString(halfed)
 }
 
+/*
+Create a random private key, then create an onion address from that.
+*/
 func RandOnion() (*rsa.PrivateKey, string) {
 	key, _ := rsa.GenerateKey(rand.Reader, 1024)
 	onion := KeyToOnion(key)
 	return key, onion
 }
 
-func GetWords(wordListUrl string) []string {
-	res, _ := http.Get(wordListUrl)
-	bytes, _ := ioutil.ReadAll(res.Body)
-	body := string(bytes)
-	words := strings.Fields(body)
-	out := []string{}
-	for _, word := range words {
-		// Limit to words larger than 3 characters
-		if len(word) > 3 {
-			out = append(out, strings.ToUpper(word))
-		}
-	}
-	return out
-}
-
+/*
+Result structure is private key + onion pair.
+*/
 type Result struct {
 	key   *rsa.PrivateKey
 	onion string
 }
 
+/*
+Endlessly generate random onion addresses and check them against the words array
+looking for prefix matches.
+*/
 func Search(words []string, results chan *Result) {
 	for {
 		key, onion := RandOnion()
 		for _, word := range words {
 			if strings.HasPrefix(onion, word) {
 				results <- &Result{key, strings.ToLower(onion)}
+				break
 			}
 		}
 	}
 }
 
+/*
+Read a local dictionary file.
+*/
+func readDictFile(dictFile string) []string {
+	bytes, _ := ioutil.ReadFile(dictFile)
+	body := string(bytes)
+	return strings.Fields(body)
+}
+
+/*
+Read dictionary file from a URL.
+*/
+func readDictUrl(dictUrl string) []string {
+	res, _ := http.Get(dictUrl)
+	bytes, _ := ioutil.ReadAll(res.Body)
+	body := string(bytes)
+	return strings.Fields(body)
+}
+
 func main() {
-	words := GetWords("http://www.mit.edu/~ecprice/wordlist.10000")
+
+	var minSize int
+	flag.IntVar(&minSize, "min", 3, "Minimum word size")
+
+	var dictFile string
+	flag.StringVar(&dictFile, "file", "", "Path to dictionary file")
+
+	var dictUrl string
+	flag.StringVar(&dictUrl, "url", "", "URL of dictionary file")
+
+	flag.Parse()
+
+	var words []string
+
+	if len(dictFile) == 0 && len(dictUrl) == 0 {
+		fmt.Println("No dictionary supplied. See --help for usage.")
+		return
+	} else {
+		fmt.Printf("Loading dictionary... ")
+		if len(dictFile) > 0 {
+			words = readDictFile(dictFile)
+		} else if len(dictUrl) > 0 {
+			words = readDictUrl(dictUrl)
+		}
+	}
+
+	// Filter by minimum size and convert to uppercase
+	var filtered []string
+	for _, word := range words {
+		if len(word) >= minSize {
+			filtered = append(filtered, strings.ToUpper(word))
+		}
+	}
+	words = filtered
+
+	fmt.Println(len(words), "words found.")
+	fmt.Println("Searching...")
+
+	// Start up the goroutines
 	results := make(chan *Result)
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go Search(words, results)
 	}
+
 	os.MkdirAll("./keys", os.ModePerm)
+
 	for result := range results {
 		fmt.Println(result.onion)
 		der := x509.MarshalPKCS1PrivateKey(result.key)
