@@ -12,6 +12,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base32"
 	"encoding/base64"
 	"flag"
@@ -24,23 +25,15 @@ import (
 )
 
 /*
-Create onion address by base-32 encoding a SHA1 hash of the first half of the
-private key.
-*/
-func KeyToOnion(key *rsa.PrivateKey) string {
-	pub := key.Public()
-	der, _ := x509.MarshalPKIXPublicKey(pub)
-	hashed := sha1.Sum(der[22:])
-	halfed := hashed[:len(hashed)/2]
-	return base32.StdEncoding.EncodeToString(halfed)
-}
-
-/*
-Create a random private key, then create an onion address from that.
+Create onion address by base-32 encoding a SHA1 hash of the first half of a
+new private RSA key.
 */
 func RandOnion() (*rsa.PrivateKey, string) {
 	key, _ := rsa.GenerateKey(rand.Reader, 1024)
-	onion := KeyToOnion(key)
+	der, _ := asn1.Marshal(key.PublicKey)
+	hash := sha1.Sum(der)
+	half := hash[:len(hash)/2]
+	onion := base32.StdEncoding.EncodeToString(half)
 	return key, onion
 }
 
