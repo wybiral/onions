@@ -30,7 +30,7 @@ type Result interface {
 }
 
 type rsaResult struct {
-	onion string
+	onion      string
 	privateKey *rsa.PrivateKey
 }
 
