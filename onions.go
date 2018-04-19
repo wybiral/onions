@@ -24,37 +24,50 @@ import (
 	"strings"
 )
 
+type Result interface {
+	Onion() string
+	PrivateKey() string
+}
+
+type rsaResult struct {
+	onion string
+	privateKey *rsa.PrivateKey
+}
+
 /*
 Create onion address by base-32 encoding a SHA1 hash of the first half of a
 new private RSA key.
 */
-func RandOnion() (*rsa.PrivateKey, string) {
+func randRsaResult() *rsaResult {
 	key, _ := rsa.GenerateKey(rand.Reader, 1024)
 	der, _ := asn1.Marshal(key.PublicKey)
 	hash := sha1.Sum(der)
 	half := hash[:len(hash)/2]
 	onion := base32.StdEncoding.EncodeToString(half)
-	return key, onion
+	return &rsaResult{onion: onion, privateKey: key}
 }
 
-/*
-Result structure is private key + onion pair.
-*/
-type Result struct {
-	key   *rsa.PrivateKey
-	onion string
+func (r *rsaResult) Onion() string {
+	return r.onion
+}
+
+func (r *rsaResult) PrivateKey() string {
+	der := x509.MarshalPKCS1PrivateKey(r.privateKey)
+	b64 := base64.StdEncoding.EncodeToString(der)
+	return "RSA1024:" + b64
 }
 
 /*
 Endlessly generate random onion addresses and check them against the words array
 looking for prefix matches.
 */
-func Search(words []string, results chan *Result) {
+func Search(words []string, results chan Result) {
 	for {
-		key, onion := RandOnion()
+		r := randRsaResult()
+		onion := r.Onion()
 		for _, word := range words {
 			if strings.HasPrefix(onion, word) {
-				results <- &Result{key, strings.ToLower(onion)}
+				results <- r
 				break
 			}
 		}
@@ -83,7 +96,7 @@ func readDictUrl(dictUrl string) []string {
 func main() {
 
 	var minSize int
-	flag.IntVar(&minSize, "min", 3, "Minimum word size")
+	flag.IntVar(&minSize, "min", 4, "Minimum word size")
 
 	var dictFile string
 	flag.StringVar(&dictFile, "file", "", "Path to dictionary file")
@@ -120,20 +133,19 @@ func main() {
 	fmt.Println("Searching...")
 
 	// Start up the goroutines
-	results := make(chan *Result)
+	results := make(chan Result)
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go Search(words, results)
 	}
 
 	os.MkdirAll("./keys", os.ModePerm)
 
-	for result := range results {
-		fmt.Println(result.onion)
-		der := x509.MarshalPKCS1PrivateKey(result.key)
-		b64 := base64.StdEncoding.EncodeToString(der)
-		f, _ := os.Create("./keys/" + result.onion + ".onion")
-		f.WriteString("RSA1024:")
-		f.WriteString(b64)
+	for r := range results {
+		onion := strings.ToLower(r.Onion())
+		privateKey := r.PrivateKey()
+		fmt.Println(onion)
+		f, _ := os.Create("./keys/" + onion + ".onion")
+		f.WriteString(privateKey)
 		f.Sync()
 	}
 }
